@@ -1,0 +1,158 @@
+blueprint:
+  name: Bluetooth self-heal
+  description: >-
+    Brings Bluetooth sensors back when Home Assistant's Bluetooth adapter stops delivering readings.
+
+
+    A USB Bluetooth adapter can freeze or drop off the USB bus, and Home Assistant keeps waiting on it. Your
+    Bluetooth thermometers and plant sensors then go unavailable until someone notices.
+
+
+    When **all** the sensors you pick have been unavailable for a few minutes, this reloads the Bluetooth adapter
+    you choose. If none of the sensors comes back, it can restart Home Assistant (off by default) or leave a
+    notification. It runs at most once per cooldown, and every step is written to the logbook.
+  domain: automation
+  source_url: https://github.com/SudoManaged/ha-bluetooth-self-heal/blob/main/blueprints/automation/sudomanaged/bluetooth_self_heal.yaml
+  author: SudoManaged
+  homeassistant:
+    min_version: 2024.11.0
+  input:
+    sensors:
+      name: Bluetooth sensors to watch
+      description: >-
+        Two or more sensors heard through the adapter below (for example Bluetooth thermometers). All of them
+        must be unavailable before anything happens; "unknown" counts as unavailable.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: sensor
+    bluetooth_entry:
+      name: Bluetooth adapter
+      description: >-
+        The local adapter to reload (Settings, Devices & services, Bluetooth). Pick the adapter itself (named after
+        its MAC address or model), not a Bluetooth proxy.
+      selector:
+        config_entry:
+          integration: bluetooth
+    unavailable_minutes:
+      name: Unavailable for (minutes)
+      description: >-
+        Act when every sensor has been unavailable at least this long. Home Assistant itself marks a Bluetooth
+        sensor unavailable only after it has not heard from it for a while (up to about 20 minutes).
+      default: 2
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: min
+    recovery_seconds:
+      name: Wait for the sensors to come back (seconds)
+      description: >-
+        After the reload, how long to wait for any of the sensors to become available again before counting the
+        reload as failed.
+      default: 90
+      selector:
+        number:
+          min: 15
+          max: 600
+          unit_of_measurement: s
+    restart_if_no_recovery:
+      name: Restart Home Assistant if the reload does not help
+      description: >-
+        Off leaves Home Assistant running and creates a notification instead. On restarts Home Assistant at most
+        once per cooldown; use a cooldown of several hours with it.
+      default: false
+      selector:
+        boolean:
+    cooldown_minutes:
+      name: Cooldown (minutes)
+      description: Run at most once in this period.
+      default: 30
+      selector:
+        number:
+          min: 5
+          max: 1440
+          unit_of_measurement: min
+mode: single
+max_exceeded: silent
+triggers:
+  - trigger: state
+    entity_id: !input sensors
+    to: unavailable
+    for:
+      minutes: !input unavailable_minutes
+  # Tries again after the cooldown while the sensors stay unavailable.
+  - trigger: time_pattern
+    minutes: /5
+variables:
+  sensors: !input sensors
+  unavailable_minutes: !input unavailable_minutes
+  cooldown_minutes: !input cooldown_minutes
+  restart_if_no_recovery: !input restart_if_no_recovery
+conditions:
+  - condition: template
+    value_template: >-
+      {% set ents = expand(sensors) %}
+      {% set n = ents | count %}
+      {% set since = now() - timedelta(minutes=unavailable_minutes | int) %}
+      {% set unavail = ents | selectattr('state', 'in', ['unavailable', 'unknown'])
+           | selectattr('last_changed', 'lt', since) | list | count %}
+      {{ n > 0 and unavail == n }}
+  - condition: template
+    value_template: >-
+      {{ this.attributes.last_triggered is none
+         or (now() - this.attributes.last_triggered).total_seconds() > (cooldown_minutes | int) * 60 - 30 }}
+actions:
+  - action: logbook.log
+    data:
+      name: "{{ this.attributes.friendly_name }}"
+      message: All watched Bluetooth sensors are unavailable; reloading the Bluetooth adapter
+      entity_id: "{{ this.entity_id }}"
+  # Carry on if the reload itself fails (for example a removed or replaced entry), so the fallback still runs.
+  - action: homeassistant.reload_config_entry
+    continue_on_error: true
+    data:
+      entry_id: !input bluetooth_entry
+  # A sensor becomes available again only when Home Assistant receives a new advertisement from it.
+  - wait_template: >-
+      {{ expand(sensors) | rejectattr('state', 'in', ['unavailable', 'unknown']) | list | count > 0 }}
+    timeout:
+      seconds: !input recovery_seconds
+    continue_on_timeout: true
+  - if:
+      - condition: template
+        value_template: "{{ wait.completed }}"
+    then:
+      - action: logbook.log
+        data:
+          name: "{{ this.attributes.friendly_name }}"
+          message: The reload brought the sensors back
+          entity_id: "{{ this.entity_id }}"
+      - action: persistent_notification.dismiss
+        data:
+          notification_id: "bluetooth-self-heal-{{ this.entity_id }}"
+    else:
+      - if:
+          - condition: template
+            value_template: "{{ restart_if_no_recovery }}"
+        then:
+          - action: logbook.log
+            data:
+              name: "{{ this.attributes.friendly_name }}"
+              message: The reload did not bring the sensors back; restarting Home Assistant
+              entity_id: "{{ this.entity_id }}"
+          - action: homeassistant.restart
+        else:
+          - action: logbook.log
+            data:
+              name: "{{ this.attributes.friendly_name }}"
+              message: The reload did not bring the sensors back
+              entity_id: "{{ this.entity_id }}"
+          - action: persistent_notification.create
+            data:
+              title: "{{ this.attributes.friendly_name }}: Bluetooth sensors are still unavailable"
+              message: >-
+                Reloading the Bluetooth adapter did not bring the sensors back. Check the adapter (unplug and
+                replug a USB adapter) or restart Home Assistant.
+              notification_id: "bluetooth-self-heal-{{ this.entity_id }}"

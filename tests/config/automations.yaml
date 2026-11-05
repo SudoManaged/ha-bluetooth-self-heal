@@ -1,0 +1,9 @@
+- id: test_bluetooth_self_heal
+  alias: Test Bluetooth self-heal
+  use_blueprint:
+    path: sudomanaged/bluetooth_self_heal.yaml
+    input:
+      sensors:
+        - sensor.ble_test_one
+        - sensor.ble_test_two
+      bluetooth_entry: 0123456789ABCDEF0123456789
