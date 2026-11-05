@@ -236,6 +236,7 @@ Home Assistant's Bluetooth integration, which is how most Bluetooth sensor integ
 - [Webhook alerts](https://github.com/SudoManaged/ha-webhook-alerts)
 - [Yealink desk phone call log](https://github.com/SudoManaged/ha-yealink-call-log)
 - [Dehumidifier kit](https://github.com/SudoManaged/ha-dehumidifier-kit)
+- [Internet failover alerts](https://github.com/SudoManaged/ha-internet-failover)
 
 ## Changelog and license
 
